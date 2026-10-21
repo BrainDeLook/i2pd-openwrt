@@ -25,9 +25,11 @@ jobs:
           shellcheck .github/scripts/*.sh
 
   aarch64:
-    name: Build and run aarch64 with official dependencies
+    name: Build aarch64 package
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    outputs:
+      boost_version: ${{ steps.sdk_feed.outputs.boost_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,12 +49,36 @@ jobs:
           BUILD_LOG: 1
           V: s
 
+      - name: Upload package and build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-aarch64-test
+          path: |
+            bin/packages/**/action/i2pd-*.apk
+            logs
+          if-no-files-found: warn
+
+  smoke:
+    name: Install and run with official OpenWrt dependencies
+    needs: aarch64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: i2pd-aarch64-test
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Check linked Boost ABI
         run: |
           set -euo pipefail
           apk="$(find bin -type f -name 'i2pd-*.apk' -print -quit)"
           test -n "$apk"
-          bash .github/scripts/verify-boost-abi.sh "$apk" '${{ steps.sdk_feed.outputs.boost_version }}'
+          bash .github/scripts/verify-boost-abi.sh "$apk" '${{ needs.aarch64.outputs.boost_version }}'
 
       - name: Run with official OpenWrt runtime libraries
         run: |
@@ -67,20 +93,17 @@ jobs:
           bash .github/scripts/collect-feed.sh "$apk" test-feed "$private_key" "$public_key"
           version="$(sed -n 's/^PKG_VERSION:=//p' i2pd/Makefile)"
           release="$(sed -n 's/^PKG_RELEASE:=//p' i2pd/Makefile)"
-          docker run --rm --platform linux/arm64 \
+          docker run --rm \
             --entrypoint /bin/sh \
             -v "$(realpath test-feed):/packages:ro" \
             -e "I2PD_VERSION=${version}-r${release}" \
             ghcr.io/openwrt/rootfs:aarch64_generic-25.12.5 \
             -ec 'mkdir -p /var/lock; cp /packages/i2pd-feed.pub.pem /etc/apk/keys/i2pd-test.pem; apk -X /packages/packages.adb update; apk -X /packages/packages.adb add "i2pd=$I2PD_VERSION"; /usr/bin/i2pd --version'
 
-      - name: Upload package and build logs
+      - name: Upload signed test repository
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: i2pd-aarch64-test
-          path: |
-            bin/packages/**/action/i2pd-*.apk
-            test-feed
-            logs
+          name: i2pd-test-feed
+          path: test-feed
           if-no-files-found: warn
