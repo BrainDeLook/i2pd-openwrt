@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: Rebuild the current package revision
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,6 +28,7 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       tag: ${{ steps.check.outputs.tag }}
       hash: ${{ steps.check.outputs.hash }}
+      packages_ref: ${{ steps.check.outputs.packages_ref }}
 
     steps:
       - name: Checkout
@@ -46,6 +52,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
         run: |
           set -euo pipefail
 
@@ -76,6 +83,12 @@ jobs:
           )"
 
           test -n "$current"
+          package_release="$(sed -n 's/^PKG_RELEASE:=//p' i2pd/Makefile | head -n 1)"
+          test -n "$package_release"
+
+          # Resolve once so every architecture builds the same stable feed.
+          packages_ref="$(git ls-remote https://github.com/openwrt/packages.git refs/heads/openwrt-25.12 | awk '{print $1}')"
+          test -n "$packages_ref"
 
           echo "Upstream stable: $version"
           echo "Package version: $current"
@@ -93,30 +106,30 @@ jobs:
 
           echo "Source SHA256: $hash"
 
+          release_file="$(mktemp)"
+          trap 'rm -f "$tmp" "$release_file"' EXIT
           release_status="$(
-            curl -sS -o /dev/null -w '%{http_code}' \
+            curl -sS -o "$release_file" -w '%{http_code}' \
               -H 'Accept: application/vnd.github+json' \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H 'X-GitHub-Api-Version: 2022-11-28' \
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}"
           )"
 
-          if [ "$current" = "$version" ]; then
-            if [ "$release_status" = "200" ]; then
-              echo "i2pd $tag is already published."
-              build=false
-            elif [ "$release_status" = "404" ]; then
-              echo "i2pd $tag is not published. Rebuilding."
-              build=true
-            else
-              echo "Unexpected GitHub Release API status: $release_status"
-              exit 1
-            fi
-          elif [ "$(printf '%s\n' "$current" "$version" | sort -V | tail -n1)" = "$current" ]; then
+          if [ "$current" != "$version" ] && [ "$(printf '%s\n' "$current" "$version" | sort -V | tail -n1)" = "$current" ]; then
             echo "Local package version $current is newer than upstream $version."
             build=false
+          elif [ "$release_status" != "200" ] && [ "$release_status" != "404" ]; then
+            echo "Unexpected GitHub Release API status: $release_status"
+            exit 1
+          elif [ "$FORCE_REBUILD" = "true" ] || [ "$release_status" = "404" ]; then
+            build=true
+          elif jq -e --arg prefix "i2pd-${version}-r${package_release}-" \
+            '.assets | any(.name | startswith($prefix))' "$release_file" >/dev/null; then
+            echo "i2pd ${version}-r${package_release} is already published."
+            build=false
           else
-            echo "New stable i2pd version: $current -> $version"
+            echo "Package revision ${version}-r${package_release} is not published. Rebuilding."
             build=true
           fi
 
@@ -125,6 +138,7 @@ jobs:
             echo "version=$version"
             echo "tag=$tag"
             echo "hash=$hash"
+            echo "packages_ref=$packages_ref"
           } >> "$GITHUB_OUTPUT"
 
   discover:
@@ -269,11 +283,17 @@ jobs:
           chmod 644 "$public_key"
           test -s "$public_key"
 
+      - name: Prepare current stable dependency feed
+        id: sdk_feed
+        shell: bash
+        run: bash .github/scripts/prepare-sdk-feed.sh '${{ needs.check.outputs.packages_ref }}'
+
       - name: Build i2pd
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: ${{ matrix.arch }}-${{ env.OPENWRT_VERSION }}
           FEEDNAME: action
+          FEED_DIR: ${{ steps.sdk_feed.outputs.feed_dir }}
           PACKAGES: i2pd
           INDEX: 1
           # gh-action-sdk expects the PEM key contents, not a filesystem path.
@@ -305,11 +325,16 @@ jobs:
           test -n "$pub"
           test -s "$pub"
 
+          bash .github/scripts/verify-boost-abi.sh "$apk" '${{ steps.sdk_feed.outputs.boost_version }}'
+
           mkdir -p "artifacts/release" "artifacts/feed/${{ matrix.arch }}"
 
           output="i2pd-${version}-r${release}-${{ matrix.arch }}.apk"
 
           cp "$apk" "artifacts/release/$output"
+          # packages.adb refers to the original APK basename, not the renamed
+          # release asset. Publish that file beside the index for apk clients.
+          cp "$apk" "artifacts/feed/${{ matrix.arch }}/$(basename "$apk")"
           cp "$adb" "artifacts/feed/${{ matrix.arch }}/packages.adb"
           cp "$pub" "artifacts/feed/${{ matrix.arch }}/i2pd-feed.pub.pem"
 
@@ -407,6 +432,10 @@ jobs:
 
           for arch in $(echo '${{ needs.discover.outputs.matrix }}' | jq -r '.arch[]'); do
             mkdir -p "$FEED_ROOT/$arch"
+
+            cp \
+              "${GITHUB_WORKSPACE}/artifacts/feed/${arch}/"*.apk \
+              "$FEED_ROOT/$arch/"
 
             cp \
               "${GITHUB_WORKSPACE}/artifacts/feed/${arch}/packages.adb" \

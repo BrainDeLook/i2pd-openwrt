@@ -1,0 +1,66 @@
+name: Test i2pd package ABI
+
+on:
+  pull_request:
+    paths:
+      - i2pd/**
+      - .github/scripts/**
+      - .github/workflows/**
+  push:
+    branches:
+      - codex/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aarch64:
+    name: Build and run aarch64 with official dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare current stable dependency feed
+        id: sdk_feed
+        run: bash .github/scripts/prepare-sdk-feed.sh
+
+      - name: Build package
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: aarch64_generic-25.12.5
+          FEEDNAME: action
+          FEED_DIR: ${{ steps.sdk_feed.outputs.feed_dir }}
+          PACKAGES: i2pd
+          NO_REFRESH_CHECK: 1
+          NO_SHFMT_CHECK: 1
+          BUILD_LOG: 1
+          V: s
+
+      - name: Check linked Boost ABI
+        run: |
+          set -euo pipefail
+          apk="$(find bin -type f -name 'i2pd-*.apk' -print -quit)"
+          test -n "$apk"
+          bash .github/scripts/verify-boost-abi.sh "$apk" '${{ steps.sdk_feed.outputs.boost_version }}'
+
+      - name: Run with official OpenWrt runtime libraries
+        run: |
+          set -euo pipefail
+          apk="$(find bin -type f -name 'i2pd-*.apk' -print -quit)"
+          docker run --rm --platform linux/arm64 \
+            --entrypoint /bin/sh \
+            -v "$(realpath "$(dirname "$apk")"):/packages:ro" \
+            ghcr.io/openwrt/rootfs:aarch64_generic-25.12.5 \
+            -ec 'apk update; apk add --allow-untrusted /packages/i2pd-*.apk; /usr/bin/i2pd --version'
+
+      - name: Upload package and build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-aarch64-test
+          path: |
+            bin/packages/**/action/i2pd-*.apk
+            logs
+          if-no-files-found: warn
