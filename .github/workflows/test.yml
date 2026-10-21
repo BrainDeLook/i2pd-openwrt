@@ -10,9 +10,15 @@ on:
     branches:
       - codex/**
   workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Existing run artifact to retest without recompiling (same package sources only)
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   lint:
@@ -28,6 +34,7 @@ jobs:
     name: Build aarch64 package
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    if: inputs.build_run_id == ''
     outputs:
       boost_version: ${{ steps.sdk_feed.outputs.boost_version }}
     steps:
@@ -62,6 +69,7 @@ jobs:
   smoke:
     name: Install and run with official OpenWrt dependencies
     needs: aarch64
+    if: always() && (needs.aarch64.result == 'success' || (needs.aarch64.result == 'skipped' && inputs.build_run_id != ''))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -69,16 +77,26 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: i2pd-aarch64-test
+          run-id: ${{ inputs.build_run_id || github.run_id }}
+          github-token: ${{ github.token }}
       - uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
       - name: Check linked Boost ABI
+        env:
+          BUILT_BOOST_VERSION: ${{ needs.aarch64.outputs.boost_version }}
         run: |
           set -euo pipefail
           apk="$(find bin -type f -name 'i2pd-*.apk' -print -quit)"
           test -n "$apk"
-          bash .github/scripts/verify-boost-abi.sh "$apk" '${{ needs.aarch64.outputs.boost_version }}'
+          boost_version="$BUILT_BOOST_VERSION"
+          if [ -z "$boost_version" ]; then
+            recipe="$(curl -fsSL https://raw.githubusercontent.com/openwrt/packages/openwrt-25.12/libs/boost/Makefile)"
+            boost_version="$(sed -n 's/^PKG_VERSION:=//p' <<< "$recipe")"
+          fi
+          test -n "$boost_version"
+          bash .github/scripts/verify-boost-abi.sh "$apk" "$boost_version"
 
       - name: Run with official OpenWrt runtime libraries
         run: |

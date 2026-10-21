@@ -11,6 +11,15 @@ destination="$(realpath "$destination")"
 cp "$apk" "$destination/$(basename "$apk")"
 cp "$public_key" "$destination/i2pd-feed.pub.pem"
 
+# SDK test builds use their own generated key. Sign the published copy with
+# the feed key as well: trusting an index alone does not trust another APK key.
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$destination:/feed" \
+  -v "$private_key:/signing-key.pem:ro" \
+  alpine:3.23 \
+  apk adbsign --allow-untrusted --reset-signatures --sign-key /signing-key.pem \
+    "/feed/$(basename "$apk")"
+
 # The dependency overlay also builds official packages. Index only i2pd, so
 # this repository does not advertise/re-distribute its rebuilt dependencies.
 # Keep the SDK's sha256-160 format for OpenWrt 25.12 apk-tools compatibility.

@@ -328,12 +328,12 @@ jobs:
 
           output="i2pd-${version}-r${release}-${{ matrix.arch }}.apk"
 
-          cp "$apk" "artifacts/release/$output"
           # Keep the original APK basename beside its index. The release asset
           # is renamed for humans, but apk resolves filenames from metadata.
           bash .github/scripts/collect-feed.sh \
             "$apk" "artifacts/feed/${{ matrix.arch }}" \
             "$RUNNER_TEMP/i2pd-apk-signing-key.pem" "$pub"
+          cp "artifacts/feed/${{ matrix.arch }}/$(basename "$apk")" "artifacts/release/$output"
 
           test -f "artifacts/release/$output"
           test -f "artifacts/feed/${{ matrix.arch }}/packages.adb"

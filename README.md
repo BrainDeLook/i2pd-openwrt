@@ -12,6 +12,9 @@ Pull requests build `aarch64_generic` and run `i2pd --version` in an OpenWrt
 25.12.5 container with dependencies installed from the official repositories.
 This checks the dynamic loader; router networking and tunnels still need testing
 on a device. The test workflow publishes an APK artifact without deployment keys.
+For signing/test-only changes, its manual `build_run_id` input can reuse a previous
+run's package artifact. Only reuse builds with the same package sources and SDK
+feed preparation; package changes require a new build.
 
 Increment `PKG_RELEASE` when changing the package without changing the upstream
 version. Release detection checks that revision's APK assets; `force_rebuild`
