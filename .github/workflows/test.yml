@@ -49,11 +49,21 @@ jobs:
         run: |
           set -euo pipefail
           apk="$(find bin -type f -name 'i2pd-*.apk' -print -quit)"
+          # CI needs no repository secret: use a throwaway key to exercise the
+          # same signed index and relative APK download path as production.
+          private_key="$RUNNER_TEMP/i2pd-test.pem"
+          public_key="$RUNNER_TEMP/i2pd-test.pub.pem"
+          openssl ecparam -name prime256v1 -genkey -noout -out "$private_key"
+          openssl pkey -in "$private_key" -pubout -out "$public_key"
+          bash .github/scripts/collect-feed.sh "$apk" test-feed "$private_key" "$public_key"
+          version="$(sed -n 's/^PKG_VERSION:=//p' i2pd/Makefile)"
+          release="$(sed -n 's/^PKG_RELEASE:=//p' i2pd/Makefile)"
           docker run --rm --platform linux/arm64 \
             --entrypoint /bin/sh \
-            -v "$(realpath "$(dirname "$apk")"):/packages:ro" \
+            -v "$(realpath test-feed):/packages:ro" \
+            -e "I2PD_VERSION=${version}-r${release}" \
             ghcr.io/openwrt/rootfs:aarch64_generic-25.12.5 \
-            -ec 'apk update; apk add --allow-untrusted /packages/i2pd-*.apk; /usr/bin/i2pd --version'
+            -ec 'mkdir -p /var/lock; cp /packages/i2pd-feed.pub.pem /etc/apk/keys/i2pd-test.pem; apk -X /packages/packages.adb update; apk -X /packages/packages.adb add "i2pd=$I2PD_VERSION"; /usr/bin/i2pd --version'
 
       - name: Upload package and build logs
         if: always()
@@ -62,5 +72,6 @@ jobs:
           name: i2pd-aarch64-test
           path: |
             bin/packages/**/action/i2pd-*.apk
+            test-feed
             logs
           if-no-files-found: warn

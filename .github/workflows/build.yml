@@ -295,7 +295,6 @@ jobs:
           FEEDNAME: action
           FEED_DIR: ${{ steps.sdk_feed.outputs.feed_dir }}
           PACKAGES: i2pd
-          INDEX: 1
           # gh-action-sdk expects the PEM key contents, not a filesystem path.
           PRIVATE_KEY: ${{ secrets.APK_SIGNING_KEY }}
           NO_REFRESH_CHECK: 1
@@ -315,13 +314,11 @@ jobs:
           test -n "$release"
 
           apk="$(find bin -type f -name "i2pd-${version}-*.apk" | head -n 1)"
-          adb="$(find bin -type f -path '*/action/packages.adb' -print -quit)"
           # The SDK signs packages.adb but does not reliably export a .pub.pem file.
           # Use the public key derived from the same private key used by the SDK.
           pub="$RUNNER_TEMP/i2pd-apk-signing-key.pub.pem"
 
           test -n "$apk"
-          test -n "$adb"
           test -n "$pub"
           test -s "$pub"
 
@@ -332,11 +329,11 @@ jobs:
           output="i2pd-${version}-r${release}-${{ matrix.arch }}.apk"
 
           cp "$apk" "artifacts/release/$output"
-          # packages.adb refers to the original APK basename, not the renamed
-          # release asset. Publish that file beside the index for apk clients.
-          cp "$apk" "artifacts/feed/${{ matrix.arch }}/$(basename "$apk")"
-          cp "$adb" "artifacts/feed/${{ matrix.arch }}/packages.adb"
-          cp "$pub" "artifacts/feed/${{ matrix.arch }}/i2pd-feed.pub.pem"
+          # Keep the original APK basename beside its index. The release asset
+          # is renamed for humans, but apk resolves filenames from metadata.
+          bash .github/scripts/collect-feed.sh \
+            "$apk" "artifacts/feed/${{ matrix.arch }}" \
+            "$RUNNER_TEMP/i2pd-apk-signing-key.pem" "$pub"
 
           test -f "artifacts/release/$output"
           test -f "artifacts/feed/${{ matrix.arch }}/packages.adb"
