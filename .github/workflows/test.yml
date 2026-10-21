@@ -15,6 +15,15 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check build scripts
+        run: |
+          bash -n .github/scripts/*.sh
+          shellcheck .github/scripts/*.sh
+
   aarch64:
     name: Build and run aarch64 with official dependencies
     runs-on: ubuntu-24.04
